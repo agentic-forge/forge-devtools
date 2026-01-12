@@ -30,7 +30,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"  # Host port 5433 to avoid conflict with local PostgreSQL
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
@@ -80,9 +80,7 @@ services:
   armory:
     build:
       context: ..
-      dockerfile: forge-devtools/docker/Dockerfile.python
-      args:
-        SERVICE_DIR: forge-armory
+      dockerfile: forge-devtools/docker/Dockerfile.armory
     command: >
       sh -c "uv run alembic upgrade head &&
              uv run armory serve --host 0.0.0.0 --port 4042"
@@ -112,14 +110,35 @@ services:
       dockerfile: forge-devtools/docker/Dockerfile.node
       args:
         SERVICE_DIR: forge-armory/admin-ui
+        VITE_API_URL: http://armory:4042
     command: bun run preview --host 0.0.0.0 --port 4043
     environment:
-      VITE_API_URL: http://localhost:4042
+      VITE_API_URL: http://armory:4042
     ports:
       - "4043:4043"
     depends_on:
       armory:
         condition: service_healthy
+    develop:
+      watch:
+        - action: sync
+          path: ../forge-armory/admin-ui/src
+          target: /app/src
+        - action: rebuild
+          path: ../forge-armory/admin-ui/package.json
+
+  # One-shot init container to register MCP backends
+  init-backends:
+    image: alpine/curl:latest
+    volumes:
+      - ./scripts/init-backends.sh:/init-backends.sh:ro
+    command: /bin/sh /init-backends.sh
+    environment:
+      ARMORY_URL: http://armory:4042
+    depends_on:
+      armory:
+        condition: service_healthy
+    restart: "no"
 
   orchestrator:
     build:
@@ -159,6 +178,7 @@ services:
       dockerfile: forge-devtools/docker/Dockerfile.node
       args:
         SERVICE_DIR: forge-ui
+        VITE_API_URL: http://localhost:4041
     command: bun run preview --host 0.0.0.0 --port 4040
     environment:
       VITE_API_URL: http://localhost:4041
@@ -167,6 +187,13 @@ services:
     depends_on:
       orchestrator:
         condition: service_healthy
+    develop:
+      watch:
+        - action: sync
+          path: ../forge-ui/src
+          target: /app/src
+        - action: rebuild
+          path: ../forge-ui/package.json
 
 volumes:
   postgres_data:

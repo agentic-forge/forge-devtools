@@ -22,6 +22,10 @@ RUN bun install --frozen-lockfile 2>/dev/null || bun install
 # Copy source code
 COPY ${SERVICE_DIR}/ ./
 
+# Build arguments for Vite configuration (optional, for services that need API URL at build time)
+ARG VITE_API_URL
+ENV VITE_API_URL=${VITE_API_URL}
+
 # Build the application
 RUN bun run build
 

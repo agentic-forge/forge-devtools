@@ -1,7 +1,7 @@
 # =============================================================================
-# Agentic Forge - Python Service Dockerfile
+# Agentic Forge - Armory Service Dockerfile
 # =============================================================================
-# Base image for Python services using uv package manager
+# Extended from Dockerfile.python with Alembic support for database migrations
 # =============================================================================
 
 FROM python:3.12-slim
@@ -17,12 +17,15 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
 # Set working directory
-ARG SERVICE_DIR
 WORKDIR /app
 
 # Copy the service code
-COPY ${SERVICE_DIR}/pyproject.toml ${SERVICE_DIR}/uv.lock* ${SERVICE_DIR}/README.md* ./
-COPY ${SERVICE_DIR}/src ./src/
+COPY forge-armory/pyproject.toml forge-armory/uv.lock* forge-armory/README.md* ./
+COPY forge-armory/src ./src/
+
+# Copy Alembic migration files
+COPY forge-armory/alembic.ini ./
+COPY forge-armory/alembic ./alembic/
 
 # Install dependencies
 RUN uv sync --frozen --no-dev 2>/dev/null || uv sync --no-dev
