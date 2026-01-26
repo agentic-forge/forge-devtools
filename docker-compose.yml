@@ -4,8 +4,14 @@
 #
 # Quick Start:
 #   1. Copy .env.example to .env and add your API keys
-#   2. Run: docker compose up
-#   3. Open http://localhost:4040 in your browser
+#   2. Run: docker compose up --build   (first time or after dependency changes)
+#   3. Run: docker compose up           (subsequent runs - code changes auto-reload)
+#   4. Open http://localhost:4040 in your browser
+#
+# Hot Reload:
+#   - Python services use uvicorn --reload (changes to src/ auto-restart)
+#   - Node services use Vite dev server (HMR for instant updates)
+#   - No rebuild needed for code changes, only for dependency changes
 #
 # Services:
 #   - forge-ui:          http://localhost:4040  (Chat interface)
@@ -22,7 +28,7 @@ services:
   # Database
   # ---------------------------------------------------------------------------
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16  # PostgreSQL 16 with pgvector extension for Tool RAG
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -46,9 +52,11 @@ services:
       dockerfile: forge-devtools/docker/Dockerfile.python
       args:
         SERVICE_DIR: mcp-servers/mcp-weather
-    command: uv run python -m forge_mcp_weather.server --host 0.0.0.0 --port 4050
+    command: uv run python -m forge_mcp_weather --host 0.0.0.0 --port 4050 --reload
     ports:
       - "4050:4050"
+    volumes:
+      - ../mcp-servers/mcp-weather/src:/app/src:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4050/health"]
       interval: 10s
@@ -62,11 +70,13 @@ services:
       dockerfile: forge-devtools/docker/Dockerfile.python
       args:
         SERVICE_DIR: mcp-servers/mcp-web-search
-    command: uv run python -m forge_mcp_web_search.server --host 0.0.0.0 --port 4051
+    command: uv run python -m forge_mcp_web_search --host 0.0.0.0 --port 4051 --reload
     environment:
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
     ports:
       - "4051:4051"
+    volumes:
+      - ../mcp-servers/mcp-web-search/src:/app/src:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4051/health"]
       interval: 10s
@@ -83,13 +93,15 @@ services:
       dockerfile: forge-devtools/docker/Dockerfile.armory
     command: >
       sh -c "uv run alembic upgrade head &&
-             uv run armory serve --host 0.0.0.0 --port 4042"
+             uv run armory serve --host 0.0.0.0 --port 4042 --reload"
     environment:
       ARMORY_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-forge_armory}
       ARMORY_HOST: 0.0.0.0
       ARMORY_PORT: 4042
     ports:
       - "4042:4042"
+    volumes:
+      - ../forge-armory/src:/app/src:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,25 +119,20 @@ services:
   armory-admin-ui:
     build:
       context: ..
-      dockerfile: forge-devtools/docker/Dockerfile.node
+      dockerfile: forge-devtools/docker/Dockerfile.node-dev
       args:
         SERVICE_DIR: forge-armory/admin-ui
-        VITE_API_URL: http://armory:4042
-    command: bun run preview --host 0.0.0.0 --port 4043
+    command: bun run dev --host 0.0.0.0 --port 4043
     environment:
-      VITE_API_URL: http://armory:4042
+      VITE_API_URL: http://localhost:4042
     ports:
       - "4043:4043"
+    volumes:
+      - ../forge-armory/admin-ui/src:/app/src:ro
+      - ../forge-armory/admin-ui/index.html:/app/index.html:ro
     depends_on:
       armory:
         condition: service_healthy
-    develop:
-      watch:
-        - action: sync
-          path: ../forge-armory/admin-ui/src
-          target: /app/src
-        - action: rebuild
-          path: ../forge-armory/admin-ui/package.json
 
   # One-shot init container to register MCP backends
   init-backends:
@@ -146,7 +153,7 @@ services:
       dockerfile: forge-devtools/docker/Dockerfile.python
       args:
         SERVICE_DIR: forge-orchestrator
-    command: uv run orchestrator serve --host 0.0.0.0 --port 4041
+    command: uv run orchestrator serve --host 0.0.0.0 --port 4041 --reload
     environment:
       # LLM Provider - set ONE of these API keys
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
@@ -162,6 +169,7 @@ services:
       - "4041:4041"
     volumes:
       - conversations_data:/root/.forge/conversations
+      - ../forge-orchestrator/src:/app/src:ro
     depends_on:
       armory:
         condition: service_healthy
@@ -175,25 +183,20 @@ services:
   ui:
     build:
       context: ..
-      dockerfile: forge-devtools/docker/Dockerfile.node
+      dockerfile: forge-devtools/docker/Dockerfile.node-dev
       args:
         SERVICE_DIR: forge-ui
-        VITE_API_URL: http://localhost:4041
-    command: bun run preview --host 0.0.0.0 --port 4040
+    command: bun run dev --host 0.0.0.0 --port 4040
     environment:
       VITE_API_URL: http://localhost:4041
     ports:
       - "4040:4040"
+    volumes:
+      - ../forge-ui/src:/app/src:ro
+      - ../forge-ui/index.html:/app/index.html:ro
     depends_on:
       orchestrator:
         condition: service_healthy
-    develop:
-      watch:
-        - action: sync
-          path: ../forge-ui/src
-          target: /app/src
-        - action: rebuild
-          path: ../forge-ui/package.json
 
 volumes:
   postgres_data:

@@ -1,0 +1,24 @@
+# =============================================================================
+# Agentic Forge - Node Service Dockerfile (Development)
+# =============================================================================
+# Dev image for Node/Vue services using Bun with hot module replacement
+# Source code is mounted as a volume, no build step
+# =============================================================================
+
+FROM oven/bun:1-alpine
+
+# Install curl for healthchecks
+RUN apk add --no-cache curl
+
+# Set working directory
+ARG SERVICE_DIR
+WORKDIR /app
+
+# Copy entire project directory (src/ will be mounted over at runtime)
+COPY ${SERVICE_DIR}/ ./
+
+# Install dependencies
+RUN bun install --frozen-lockfile 2>/dev/null || bun install
+
+# Default command (override in docker-compose)
+CMD ["bun", "run", "dev", "--host", "0.0.0.0"]
