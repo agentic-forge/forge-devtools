@@ -95,7 +95,8 @@ deploy() {
     setup_vps
 
     log_info "Deploying to Docker Swarm..."
-    ssh "$VPS_HOST" "cd $STACK_DIR && IMAGE_TAG=$TAG docker stack deploy -c docker-compose.prod.yml $STACK_NAME"
+    # Source .env.production to get env vars (Docker Swarm doesn't read .env files automatically)
+    ssh "$VPS_HOST" "cd $STACK_DIR && set -a && source .env.production && set +a && IMAGE_TAG=$TAG docker stack deploy -c docker-compose.prod.yml $STACK_NAME"
 
     log_info "Waiting for services to start..."
     sleep 5
