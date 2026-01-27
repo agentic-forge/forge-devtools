@@ -124,7 +124,7 @@ services:
         SERVICE_DIR: forge-armory/admin-ui
     command: bun run dev --host 0.0.0.0 --port 4043
     environment:
-      VITE_API_URL: http://localhost:4042
+      VITE_API_URL: http://armory:4042
     ports:
       - "4043:4043"
     volumes:
