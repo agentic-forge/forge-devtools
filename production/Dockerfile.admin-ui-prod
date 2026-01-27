@@ -41,7 +41,8 @@ RUN printf '%s\n' \
     '' \
     '    location /api/ {' \
     '        set $upstream armory:4042;' \
-    '        proxy_pass http://$upstream/;' \
+    '        rewrite ^/api/(.*) /$1 break;' \
+    '        proxy_pass http://$upstream;' \
     '        proxy_http_version 1.1;' \
     '        proxy_set_header Host $host;' \
     '        proxy_set_header X-Real-IP $remote_addr;' \
