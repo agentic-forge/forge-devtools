@@ -1,0 +1,37 @@
+# =============================================================================
+# Agentic Forge - Node Service Dockerfile (Production)
+# =============================================================================
+# Multi-stage build: builds Vue app, serves with nginx
+# =============================================================================
+
+# Stage 1: Build
+FROM oven/bun:1-alpine AS builder
+
+WORKDIR /app
+
+# Build arguments for Vite
+ARG SERVICE_DIR
+ARG VITE_API_URL
+
+# Copy package files and install dependencies
+COPY ${SERVICE_DIR}/package.json ${SERVICE_DIR}/bun.lock* ./
+RUN bun install --frozen-lockfile 2>/dev/null || bun install
+
+# Copy source and build
+COPY ${SERVICE_DIR}/ ./
+ENV VITE_API_URL=${VITE_API_URL}
+RUN bun run build
+
+# Stage 2: Serve with nginx
+FROM nginx:alpine
+
+# Copy built assets
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy nginx config (will be created separately)
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Expose port 80
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

@@ -1,0 +1,34 @@
+# =============================================================================
+# Agentic Forge - Armory Service Dockerfile (Production)
+# =============================================================================
+# Extended from Dockerfile.python-prod with Alembic support for migrations
+# =============================================================================
+
+FROM python:3.12-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# Set working directory
+WORKDIR /app
+
+# Copy the service code
+COPY forge-armory/pyproject.toml forge-armory/uv.lock* forge-armory/README.md* ./
+COPY forge-armory/src ./src/
+
+# Copy Alembic migration files
+COPY forge-armory/alembic.ini ./
+COPY forge-armory/alembic ./alembic/
+
+# Install dependencies (production only)
+RUN uv sync --frozen --no-dev 2>/dev/null || uv sync --no-dev
+
+# Default command (override in docker-compose)
+CMD ["uv", "run", "python", "--version"]

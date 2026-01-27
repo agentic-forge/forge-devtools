@@ -1,0 +1,31 @@
+# =============================================================================
+# Agentic Forge - Python Service Dockerfile (Production)
+# =============================================================================
+# Optimized for production: no hot-reload, multi-worker capable
+# =============================================================================
+
+FROM python:3.12-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# Set working directory
+ARG SERVICE_DIR
+WORKDIR /app
+
+# Copy the service code
+COPY ${SERVICE_DIR}/pyproject.toml ${SERVICE_DIR}/uv.lock* ${SERVICE_DIR}/README.md* ./
+COPY ${SERVICE_DIR}/src ./src/
+
+# Install dependencies (production only)
+RUN uv sync --frozen --no-dev 2>/dev/null || uv sync --no-dev
+
+# Default command (override in docker-compose)
+CMD ["uv", "run", "python", "--version"]

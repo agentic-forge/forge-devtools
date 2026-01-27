@@ -1,0 +1,64 @@
+# =============================================================================
+# Agentic Forge - Armory Admin UI Dockerfile (Production)
+# =============================================================================
+# Multi-stage build: builds Vue app, serves with nginx + API proxy
+# =============================================================================
+
+# Stage 1: Build
+FROM oven/bun:1-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files and install dependencies
+COPY forge-armory/admin-ui/package.json forge-armory/admin-ui/bun.lock* ./
+RUN bun install --frozen-lockfile 2>/dev/null || bun install
+
+# Copy source and build
+# VITE_API_URL is set to /api - nginx will proxy to armory
+COPY forge-armory/admin-ui/ ./
+ENV VITE_API_URL=/api
+RUN bun run build
+
+# Stage 2: Serve with nginx (includes reverse proxy to armory)
+FROM nginx:alpine
+
+# Copy built assets
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Create nginx config with reverse proxy and dynamic DNS resolution
+RUN printf '%s\n' \
+    'resolver 127.0.0.11 valid=10s ipv6=off;' \
+    'resolver_timeout 5s;' \
+    '' \
+    'server {' \
+    '    listen 80;' \
+    '    server_name _;' \
+    '    root /usr/share/nginx/html;' \
+    '    index index.html;' \
+    '' \
+    '    gzip on;' \
+    '    gzip_types text/plain text/css application/json application/javascript text/xml application/xml text/javascript;' \
+    '' \
+    '    location /api/ {' \
+    '        set $upstream armory:4042;' \
+    '        proxy_pass http://$upstream/;' \
+    '        proxy_http_version 1.1;' \
+    '        proxy_set_header Host $host;' \
+    '        proxy_set_header X-Real-IP $remote_addr;' \
+    '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' \
+    '        proxy_set_header X-Forwarded-Proto $scheme;' \
+    '    }' \
+    '' \
+    '    location /assets/ {' \
+    '        expires 1y;' \
+    '        add_header Cache-Control "public, no-transform";' \
+    '    }' \
+    '' \
+    '    location / {' \
+    '        try_files $uri $uri/ /index.html;' \
+    '    }' \
+    '}' > /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

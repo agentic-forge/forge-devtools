@@ -1,0 +1,243 @@
+# =============================================================================
+# Agentic Forge - Production Docker Swarm Stack
+# =============================================================================
+#
+# Deployment:
+#   1. Build and push images: ./build-and-push.sh (requires SSH tunnel)
+#   2. Copy to VPS: scp docker-compose.prod.yml .env.production kashif@hosting_vps:~/stacks/agentic-forge/
+#   3. Deploy: ssh kashif@hosting_vps "cd ~/stacks/agentic-forge && docker stack deploy -c docker-compose.prod.yml agentic-forge"
+#
+# Public endpoints:
+#   - https://agentic-forge.compulife.com.pk (chat UI)
+#
+# Admin access (via SSH tunnel):
+#   ssh -L 14043:localhost:14043 kashif@hosting_vps
+#   Then browse: http://localhost:14043
+#
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-forge_armory}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # ---------------------------------------------------------------------------
+  # MCP Servers (internal only)
+  # ---------------------------------------------------------------------------
+  mcp-weather:
+    image: localhost:5000/forge-mcp-weather:${IMAGE_TAG:-latest}
+    command: uv run python -m forge_mcp_weather --host 0.0.0.0 --port 4050
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4050/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  mcp-web-search:
+    image: localhost:5000/forge-mcp-web-search:${IMAGE_TAG:-latest}
+    command: uv run python -m forge_mcp_web_search --host 0.0.0.0 --port 4051
+    environment:
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4051/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # ---------------------------------------------------------------------------
+  # Core Services (internal only)
+  # ---------------------------------------------------------------------------
+  armory:
+    image: localhost:5000/forge-armory:${IMAGE_TAG:-latest}
+    command: >
+      sh -c "uv run alembic upgrade head &&
+             uv run armory serve --host 0.0.0.0 --port 4042"
+    environment:
+      ARMORY_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-forge_armory}
+      ARMORY_HOST: 0.0.0.0
+      ARMORY_PORT: 4042
+    networks:
+      - internal
+    depends_on:
+      - postgres
+      - mcp-weather
+      - mcp-web-search
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4042/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  armory-admin-ui:
+    image: localhost:5000/forge-armory-admin-ui:${IMAGE_TAG:-latest}
+    networks:
+      - internal
+    ports:
+      # Host mode port for SSH tunnel access (not exposed via ingress)
+      - target: 80
+        published: 14043
+        mode: host
+    depends_on:
+      - armory
+    deploy:
+      # Deploy only on manager node (where SSH lands)
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # One-shot init container to register MCP backends
+  init-backends:
+    image: alpine/curl:latest
+    command: >
+      sh -c '
+        echo "Waiting for Armory...";
+        until curl -sf http://armory:4042/health > /dev/null 2>&1; do
+          sleep 2;
+        done;
+        echo "Armory ready!";
+
+        echo "Waiting for MCP services to be reachable...";
+        until curl -sf http://mcp-weather:4050/health > /dev/null 2>&1; do
+          echo "  waiting for mcp-weather...";
+          sleep 3;
+        done;
+        echo "  mcp-weather ready!";
+        until curl -sf http://mcp-web-search:4051/health > /dev/null 2>&1; do
+          echo "  waiting for mcp-web-search...";
+          sleep 3;
+        done;
+        echo "  mcp-web-search ready!";
+
+        EXISTING=$$(curl -sf http://armory:4042/admin/backends | grep -o "\"total\":[0-9]*" | cut -d: -f2);
+        if [ "$$EXISTING" -gt 0 ]; then
+          echo "Backends already registered ($$EXISTING found). Skipping.";
+          exit 0;
+        fi;
+
+        echo "Registering backends...";
+        curl -sf -X POST http://armory:4042/admin/backends -H "Content-Type: application/json" -d "{\"name\":\"weather\",\"url\":\"http://mcp-weather:4050/mcp\",\"enabled\":true,\"timeout\":30.0,\"prefix\":\"weather\",\"mount_enabled\":true}";
+        curl -sf -X POST http://armory:4042/admin/backends -H "Content-Type: application/json" -d "{\"name\":\"web-search\",\"url\":\"http://mcp-web-search:4051/mcp\",\"enabled\":true,\"timeout\":30.0,\"prefix\":\"search\",\"mount_enabled\":true}";
+        curl -sf -X POST http://armory:4042/admin/backends -H "Content-Type: application/json" -d "{\"name\":\"huggingface\",\"url\":\"https://huggingface.co/mcp\",\"enabled\":true,\"timeout\":30.0,\"prefix\":\"hf\",\"mount_enabled\":true}";
+        echo "Backends registered!";
+      '
+    networks:
+      - internal
+    depends_on:
+      - armory
+    deploy:
+      restart_policy:
+        condition: none
+
+  orchestrator:
+    image: localhost:5000/forge-orchestrator:${IMAGE_TAG:-latest}
+    command: uv run orchestrator serve --host 0.0.0.0 --port 4041
+    environment:
+      # LLM Provider API Keys
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Orchestrator settings
+      ORCHESTRATOR_ARMORY_URL: http://armory:4042/mcp
+      ORCHESTRATOR_DEFAULT_MODEL: ${ORCHESTRATOR_DEFAULT_MODEL:-anthropic/claude-sonnet-4}
+      ORCHESTRATOR_HOST: 0.0.0.0
+      ORCHESTRATOR_PORT: 4041
+    volumes:
+      - conversations_data:/root/.forge/conversations
+    networks:
+      - internal
+    depends_on:
+      - armory
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4041/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # ---------------------------------------------------------------------------
+  # Public UI (with nginx reverse proxy to orchestrator)
+  # ---------------------------------------------------------------------------
+  ui:
+    image: localhost:5000/forge-ui:${IMAGE_TAG:-latest}
+    networks:
+      - internal
+      - traefik-net
+    depends_on:
+      - orchestrator
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      labels:
+        - "traefik.enable=true"
+        - "traefik.swarm.network=traefik-net"
+        - "traefik.constraint-label=traefik-net"
+        # HTTPS router
+        - "traefik.http.routers.forge-ui.rule=Host(`agentic-forge.compulife.com.pk`)"
+        - "traefik.http.routers.forge-ui.entrypoints=websecure"
+        - "traefik.http.routers.forge-ui.tls=true"
+        - "traefik.http.routers.forge-ui.tls.certresolver=myresolver"
+        - "traefik.http.services.forge-ui.loadbalancer.server.port=80"
+
+networks:
+  internal:
+    driver: overlay
+  traefik-net:
+    external: true
+
+volumes:
+  postgres_data:
+  conversations_data:
